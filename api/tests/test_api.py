@@ -1,8 +1,14 @@
 import base64
+import hashlib
+import hmac
+import json
+import os
+import secrets
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -12,7 +18,15 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 
 TOKEN_LIFETIME_SECONDS = 3600
-TEST_TOKEN_SECRET = "WORKSHOP_SECRET_2026"
+JWT_ISSUER = "workshop-auth-backend"
+JWT_AUDIENCE = "workshop-requirements-api"
+
+
+@pytest.fixture(autouse=True)
+def token_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_TOKEN_SECRET", secrets.token_urlsafe(32))
+    monkeypatch.setenv("WORKSHOP_LEGACY_SECRET", secrets.token_urlsafe(16))
+    monkeypatch.delenv("WORKSHOP_LEGACY_TOKENS_ENABLED", raising=False)
 
 
 def token(
@@ -20,13 +34,48 @@ def token(
     role: str = "STUDENT",
     expires_at: int | None = None,
 ) -> str:
+    """Token del flujo legacy Base64, firmado con el secreto legacy de entorno."""
     expiration = (
         expires_at
         if expires_at is not None
         else int(time.time()) + TOKEN_LIFETIME_SECONDS
     )
-    raw_token = f"{username}|{role}|{expiration}|{TEST_TOKEN_SECRET}"
+    raw_token = f"{username}|{role}|{expiration}|{os.environ['WORKSHOP_LEGACY_SECRET']}"
     return base64.b64encode(raw_token.encode()).decode()
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def jwt_token(
+    username: str = "student",
+    role: str = "STUDENT",
+    expires_at: int | None = None,
+    issuer: str = JWT_ISSUER,
+    audience: str = JWT_AUDIENCE,
+    secret: str | None = None,
+    claims_override: dict[str, Any] | None = None,
+) -> str:
+    now = int(time.time())
+    claims: dict[str, Any] = {
+        "iss": issuer,
+        "aud": audience,
+        "sub": username,
+        "role": role,
+        "iat": now,
+        "exp": expires_at if expires_at is not None else now + TOKEN_LIFETIME_SECONDS,
+    }
+    claims.update(claims_override or {})
+    header = _b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    payload = _b64url(json.dumps(claims).encode())
+    key = (secret if secret is not None else os.environ["AUTH_TOKEN_SECRET"]).encode()
+    signature = hmac.new(key, f"{header}.{payload}".encode("ascii"), hashlib.sha256).digest()
+    return f"{header}.{payload}.{_b64url(signature)}"
+
+
+def jwt_headers(**kwargs: Any) -> dict[str, str]:
+    return {"Authorization": f"Bearer {jwt_token(**kwargs)}"}
 
 
 def headers(
@@ -417,3 +466,151 @@ def test_create_app_does_not_seed_an_existing_database(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert len(response.json()) == 2
+
+
+def test_accepts_valid_signed_token_on_protected_route(client: TestClient) -> None:
+        response = client.get("/api/tasks", headers=jwt_headers(username="student"))
+
+        assert response.status_code == 200
+        assert {task["owner"] for task in response.json()} == {"student"}
+
+
+def test_rejects_signed_token_with_altered_payload(client: TestClient) -> None:
+        valid_token = jwt_token(username="student")
+        header, _, signature = valid_token.split(".")
+        forged_payload = _b64url(
+            json.dumps(
+                {
+                    "iss": JWT_ISSUER,
+                    "aud": JWT_AUDIENCE,
+                    "sub": "trainer",
+                    "role": "ADMIN",
+                    "iat": int(time.time()),
+                    "exp": int(time.time()) + TOKEN_LIFETIME_SECONDS,
+                }
+            ).encode()
+        )
+
+        response = client.get(
+            "/api/tasks",
+            headers={"Authorization": f"Bearer {header}.{forged_payload}.{signature}"},
+        )
+
+        assert response.status_code == 401
+
+
+def test_rejects_expired_signed_token(client: TestClient) -> None:
+        response = client.get(
+            "/api/tasks",
+            headers=jwt_headers(expires_at=int(time.time()) - 1),
+        )
+
+        assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+        "claims",
+        [
+            {"issuer": "unknown-issuer"},
+            {"audience": "unknown-audience"},
+        ],
+)
+def test_rejects_signed_token_with_wrong_issuer_or_audience(
+        client: TestClient,
+        claims: dict[str, str],
+) -> None:
+        response = client.get("/api/tasks", headers=jwt_headers(**claims))
+
+        assert response.status_code == 401
+
+
+def test_rejects_token_signed_with_another_secret(client: TestClient) -> None:
+        other_secret = secrets.token_urlsafe(32)
+
+        response = client.get(
+            "/api/tasks",
+            headers=jwt_headers(secret=other_secret),
+        )
+
+        assert response.status_code == 401
+
+
+def test_rejects_unsigned_token_with_none_algorithm(client: TestClient) -> None:
+        header = _b64url(json.dumps({"alg": "none", "typ": "JWT"}).encode())
+        payload = _b64url(
+            json.dumps(
+                {
+                    "iss": JWT_ISSUER,
+                    "aud": JWT_AUDIENCE,
+                    "sub": "student",
+                    "role": "STUDENT",
+                    "iat": int(time.time()),
+                    "exp": int(time.time()) + TOKEN_LIFETIME_SECONDS,
+                }
+            ).encode()
+        )
+
+        response = client.get(
+            "/api/tasks",
+            headers={"Authorization": f"Bearer {header}.{payload}."},
+        )
+
+        assert response.status_code == 401
+
+
+def test_rejects_signed_token_when_signing_secret_is_missing(
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+        valid_headers = jwt_headers()
+        monkeypatch.delenv("AUTH_TOKEN_SECRET")
+
+        response = client.get("/api/tasks", headers=valid_headers)
+
+        assert response.status_code == 401
+
+
+def test_rejects_signed_token_when_signing_secret_is_too_short(
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+        short_secret = "too-short"
+        monkeypatch.setenv("AUTH_TOKEN_SECRET", short_secret)
+
+        response = client.get(
+            "/api/tasks",
+            headers=jwt_headers(secret=short_secret),
+        )
+
+        assert response.status_code == 401
+
+
+def test_rejects_legacy_token_when_legacy_flow_is_disabled(
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+        monkeypatch.setenv("WORKSHOP_LEGACY_TOKENS_ENABLED", "false")
+
+        response = client.get("/api/tasks", headers=headers())
+
+        assert response.status_code == 401
+
+
+def test_rejects_legacy_token_when_legacy_secret_is_missing(
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+        legacy_headers = headers()
+        monkeypatch.delenv("WORKSHOP_LEGACY_SECRET")
+
+        response = client.get("/api/tasks", headers=legacy_headers)
+
+        assert response.status_code == 401
+
+
+def test_app_source_does_not_embed_the_legacy_secret() -> None:
+        app_directory = Path(__file__).resolve().parents[1] / "app"
+
+        for source_file in app_directory.glob("*.py"):
+            assert "WORKSHOP_SECRET" not in source_file.read_text(encoding="utf-8")
+

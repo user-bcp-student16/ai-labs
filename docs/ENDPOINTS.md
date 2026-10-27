@@ -10,7 +10,7 @@
 - **Contrato acordado:** no hay un contrato acordado separado del
   comportamiento observado.
 - **Riesgos y preguntas pendientes:** la autenticación sigue usando un token
-  Base64 con secreto fijo; las consultas permiten elegir `owner`; el SQL se
+  JWT firmado o, temporalmente, Base64 legacy; las consultas permiten elegir `owner`; el SQL se
   construye por concatenación; la carga usa el nombre de archivo recibido y no
   define extensión ni tamaño máximo. Estos comportamientos se documentan, no
   se consideran controles seguros. Véanse H-API-01 a H-API-05 en
@@ -24,9 +24,24 @@ Las cinco rutas requieren el header:
 Authorization: Bearer <token>
 ```
 
-El token observado es Base64 de la cadena
-`username|role|expiracion_unix|WORKSHOP_SECRET_2026`. Para los ejemplos se
-utiliza este token local de demostración:
+La API acepta dos formatos de token:
+
+- **JWT HS256 firmado (preferido):** se verifica la firma con
+  `AUTH_TOKEN_SECRET` (mínimo 32 bytes; sin valor por defecto). Los claims
+  requeridos son `iss`, `aud`, `sub`, `role`, `iat` y `exp`. Se exige
+  `iss=workshop-auth-backend` y `aud=workshop-requirements-api`, y se rechaza
+  cualquier `exp` vencido. Se rechaza `alg: none` y cualquier otro algoritmo.
+- **Legacy Base64 (temporal):** token de la forma
+  `username|role|expiracion_unix|secreto` codificado en Base64. Solo se acepta
+  si `WORKSHOP_LEGACY_TOKENS_ENABLED=true` (valor por defecto) y
+  `WORKSHOP_LEGACY_SECRET` está configurado. Base64 no firma ni cifra el token;
+  mientras esté activo, H-API-01 no queda cerrado. Debe desactivarse cuando
+  `auth` emita JWT.
+
+Las variables se leen del entorno. No hay secretos en el código ni en esta
+documentación.
+
+Para los ejemplos legacy se utiliza este token local de demostración:
 
 ```text
 c3R1ZGVudHxTVFVERU5UfDIxNDc0ODM2NDd8V09SS1NIT1BfU0VDUkVUXzIwMjY=

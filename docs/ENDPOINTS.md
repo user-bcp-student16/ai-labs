@@ -10,7 +10,7 @@
 - **Contrato acordado:** no hay un contrato acordado separado del
   comportamiento observado.
 - **Riesgos y preguntas pendientes:** la autenticación sigue usando un token
-  JWT firmado o, temporalmente, Base64 legacy; las consultas permiten elegir `owner`; el SQL se
+  JWT firmado o, temporalmente, Base64 legacy; el `owner` debe coincidir con el token; el SQL se
   construye por concatenación; la carga usa el nombre de archivo recibido y no
   define extensión ni tamaño máximo. Estos comportamientos se documentan, no
   se consideran controles seguros. Véanse H-API-01 a H-API-05 en
@@ -81,7 +81,7 @@ No tiene cuerpo.
 
 | campo/parámetro | tipo | obligatorio | descripción |
 |---|---|---:|---|
-| `owner` (query) | string | no | Propietario que se usa para filtrar. Si falta o está vacío, se usa el usuario del token. |
+| `owner` (query) | string | no | Propietario que se usa para filtrar. Debe coincidir con el usuario del token; otro valor responde `403`. Si falta o está vacío, se usa el usuario del token. |
 
 Ejemplo completo:
 
@@ -139,10 +139,9 @@ Ejemplo observado con las tareas de inicio:
 
 ### 6. Notas de seguridad
 
-El parámetro `owner` se usa directamente y puede seleccionar tareas de otro
-propietario; no queda limitado a la identidad del token. Además, el filtro SQL
-se concatena con ese valor. La firma del token no se verifica. Estos riesgos
-siguen pendientes.
+El parámetro `owner` debe coincidir con el usuario del token; cualquier otro valor
+responde `403` con `{"detail":"Owner not allowed"}` (H-API-02 corregido). El filtro SQL
+todavía se concatena con ese valor; esto sigue pendiente en H-API-03.
 
 ## `POST /api/tasks`
 
@@ -168,7 +167,7 @@ indicadas se convierten a string con `str(...)`.
 | `description` (body) | valor JSON convertido a string | no | Descripción. Predeterminado: `""`. |
 | `status` (body) | valor JSON convertido a string | no | Estado. Predeterminado: `"TODO"`. |
 | `priority` (body) | valor JSON convertido a string | no | Prioridad. Predeterminado: `"MEDIUM"`. |
-| `owner` (body) | valor JSON convertido a string | no | Propietario. Si falta, se usa el nombre de usuario del token. |
+| `owner` (body) | valor JSON convertido a string | no | Propietario. Debe coincidir con el usuario del token; otro valor responde `403`. Si falta, se usa el nombre de usuario del token. |
 
 Ejemplo completo:
 
@@ -226,9 +225,9 @@ Ejemplo observado al crear la tarea del request:
 
 ### 6. Notas de seguridad
 
-El campo `owner` del body puede prevalecer sobre el usuario autenticado. Los
-valores de entrada se interpolan en una sentencia SQL y no se validan mediante
-un modelo Pydantic. No hay comprobación de rol.
+El campo `owner` del body debe coincidir con el usuario del token; otro valor
+responde `403` (H-API-02 corregido). Los valores se interpolan en SQL y no se
+validan con un modelo Pydantic (H-API-03, pendiente). No hay comprobación de rol.
 
 ## `GET /api/summary`
 
@@ -250,7 +249,7 @@ No tiene cuerpo.
 
 | campo/parámetro | tipo | obligatorio | descripción |
 |---|---|---:|---|
-| `owner` (query) | string | no | Propietario del resumen. Si falta o está vacío, se usa el usuario del token. |
+| `owner` (query) | string | no | Propietario del resumen. Debe coincidir con el usuario del token; otro valor responde `403`. Si falta o está vacío, se usa el usuario del token. |
 
 Ejemplo completo:
 
@@ -294,8 +293,8 @@ Ejemplo observado después de crear la tarea del ejemplo anterior:
 
 ### 6. Notas de seguridad
 
-El parámetro `owner` puede seleccionar datos de otro propietario y se concatena
-directamente en SQL. La consulta no está ligada a la identidad del token.
+El parámetro `owner` debe coincidir con el usuario del token; otro valor responde
+`403` (H-API-02 corregido). La consulta SQL aún se concatena (H-API-03, pendiente).
 
 ## `POST /api/requirements`
 

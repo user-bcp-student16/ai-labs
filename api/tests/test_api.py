@@ -267,16 +267,11 @@ def test_summarizes_tasks_for_authenticated_user(client: TestClient) -> None:
     }
 
 
-def test_summary_for_owner_without_tasks_is_empty(client: TestClient) -> None:
+def test_summary_for_other_owner_is_forbidden(client: TestClient) -> None:
     response = client.get("/api/summary?owner=unknown", headers=headers())
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "owner": "unknown",
-        "total": 0,
-        "byStatus": {},
-        "highPriorityOpen": 0,
-    }
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Owner not allowed"
 
 
 def test_summary_query_does_not_expose_another_owner(client: TestClient) -> None:

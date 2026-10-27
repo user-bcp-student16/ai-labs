@@ -19,6 +19,15 @@ def current_identity(authorization: str = Header(default="")) -> dict[str, str]:
         raise HTTPException(status_code=401, detail="Invalid token: invalid token") from error
 
 
+def owner_for(identity: dict[str, str], requested: str | None) -> str:
+    username = identity["username"]
+    if not requested:
+        return username
+    if requested != username:
+        raise HTTPException(status_code=403, detail="Owner not allowed")
+    return username
+
+
 def create_app(db_path: str | None = None, upload_dir: str | None = None) -> FastAPI:
     selected_db = db_path or os.getenv("WORKSHOP_DB_PATH", "./data/workshop.db")
     selected_uploads = upload_dir or os.getenv("WORKSHOP_UPLOAD_DIR", "./uploads")
@@ -59,7 +68,7 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
 
     @app.get("/api/tasks")
     def list_tasks(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(current_identity)) -> list[dict[str, Any]]:
-        requested_owner = owner or identity["username"]
+        requested_owner = owner_for(identity, owner)
         sql = "SELECT id,title,description,status,owner,priority,created_at FROM tasks WHERE owner='" + requested_owner + "' ORDER BY id"
         rows = connection.execute(sql).fetchall()
         result: list[dict[str, Any]] = []
@@ -73,7 +82,7 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
         description = str(payload.get("description", ""))
         status = str(payload.get("status", "TODO"))
         priority = str(payload.get("priority", "MEDIUM"))
-        owner = str(payload.get("owner", identity["username"]))
+        owner = owner_for(identity, payload.get("owner"))
         sql = "INSERT INTO tasks(title,description,status,owner,priority,created_at) VALUES ('" + title + "','" + description + "','" + status + "','" + owner + "','" + priority + "',datetime('now'))"
         cursor = connection.execute(sql)
         connection.commit()
@@ -82,7 +91,7 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
 
     @app.get("/api/summary")
     def summary(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(current_identity)) -> dict[str, Any]:
-        requested_owner = owner or identity["username"]
+        requested_owner = owner_for(identity, owner)
         rows = connection.execute("SELECT status,priority FROM tasks WHERE owner='" + requested_owner + "'").fetchall()
         response: dict[str, Any] = {"owner": requested_owner, "total": 0, "byStatus": {}, "highPriorityOpen": 0}
         for row in rows:

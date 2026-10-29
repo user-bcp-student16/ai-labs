@@ -9,6 +9,8 @@ import org.junit.jupiter.api.Test;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
@@ -38,7 +40,8 @@ class AuthTokenClaimsTest {
         assertEquals("STUDENT", claims.get("role").asText());
         assertEquals("workshop-auth-backend", claims.get("iss").asText());
         JsonNode audience = claims.get("aud");
-        assertEquals("workshop-requirements-api", audience.isArray() ? audience.get(0).asText() : audience.asText());
+        assertTrue(audience.isTextual(), "aud must be a single string per docs/ENDPOINTS.md");
+        assertEquals("workshop-requirements-api", audience.asText());
         assertTrue(claims.get("iat").isIntegralNumber());
         assertTrue(claims.get("exp").isIntegralNumber());
     }
@@ -73,6 +76,24 @@ class AuthTokenClaimsTest {
                 .encodeToString(MAPPER.writeValueAsBytes(claims));
 
         assertFalse(hasValidSignature(parts[0] + "." + tamperedPayload + "." + parts[2], TEST_SECRET));
+    }
+
+    // Requisito auth-token-issuance: ni el token ni el secreto se escriben en stderr durante un login correcto.
+    @Test
+    void successfulLoginDoesNotWriteTokenOrSecretToStderr() throws Exception {
+        PrintStream originalErr = System.err;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        String token;
+        System.setErr(new PrintStream(captured, true, StandardCharsets.UTF_8));
+        try {
+            token = loginResponse().path("token");
+        } finally {
+            System.setErr(originalErr);
+        }
+
+        String output = captured.toString(StandardCharsets.UTF_8);
+        assertFalse(output.contains(token));
+        assertFalse(output.contains(TEST_SECRET));
     }
 
     private Response loginResponse() {

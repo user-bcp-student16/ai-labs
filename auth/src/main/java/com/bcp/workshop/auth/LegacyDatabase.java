@@ -14,6 +14,15 @@ import java.sql.Statement;
 public class LegacyDatabase {
     private static final String DB_URL = System.getenv().getOrDefault("AUTH_DB_URL", "jdbc:sqlite:./data/workshop.db");
 
+    static {
+        // Registra el driver en el classloader actual; DriverManager no lo encuentra tras reinicios de perfil de Quarkus.
+        try {
+            Class.forName("org.sqlite.JDBC");
+        } catch (ClassNotFoundException error) {
+            throw new IllegalStateException("Driver SQLite no disponible", error);
+        }
+    }
+
     @PostConstruct
     void initialize() {
         try {

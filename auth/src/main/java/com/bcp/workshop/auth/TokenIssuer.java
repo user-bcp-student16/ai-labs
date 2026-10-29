@@ -27,7 +27,7 @@ public class TokenIssuer {
                 .claim("client", client)
                 .claim("role", role)
                 .issuer(ISSUER)
-                .audience().add(AUDIENCE).and()
+                .audience().single(AUDIENCE)
                 .issuedAt(Date.from(issuedAt))
                 .expiration(Date.from(issuedAt.plusSeconds(TOKEN_LIFETIME_SECONDS)))
                 .signWith(tokenSecret.signingKey(), Jwts.SIG.HS256)

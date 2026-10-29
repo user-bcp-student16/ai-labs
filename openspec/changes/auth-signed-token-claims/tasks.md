@@ -45,49 +45,53 @@ Cada tarea debe quedar verificada antes de iniciar la siguiente.
 
 ## 4. Configuración del secreto
 
-- [ ] 4.1 Agregar la configuración de `AUTH_TOKEN_SECRET` en `application.properties` sin valor por defecto.
+- [x] 4.1 Agregar la configuración de `AUTH_TOKEN_SECRET` en `application.properties` sin valor por defecto.
   - Verificación: arranque de la aplicación sin la variable no falla; el valor no aparece en el repositorio.
-- [ ] 4.2 Agregar un secreto de prueba de al menos 32 bytes solo en el perfil `%test`.
+- [x] 4.2 Agregar un secreto de prueba de al menos 32 bytes solo en el perfil `%test`.
   - Verificación: `python tools/lab.py test auth` usa el valor de prueba y no existe secreto real en el código.
-- [ ] 4.3 Crear la clase de configuración que valida la longitud mínima de 32 bytes.
+- [x] 4.3 Crear la clase de configuración que valida la longitud mínima de 32 bytes.
   - Verificación: prueba unitaria con 31 bytes falla con error controlado y con 32 bytes es aceptado.
 
 ## 5. Emisor JWT (aislado)
 
 - [ ] 5.1 Aprobar y agregar la dependencia `io.jsonwebtoken` en `auth/pom.xml` con versión explícita.
+  - Estado: dependencia presente y compilando; pendiente revisión de Dependency Review y SCA (sin ejecutar en este entorno).
   - Verificación: `python tools/lab.py test auth` compila; revisión de Dependency Review y SCA sin alertas no justificadas.
-- [ ] 5.2 Crear el emisor de tokens que firma HS256 con `sub`, `client`, `role`, `iss`, `aud`, `iat` y `exp` (entero).
+- [x] 5.2 Crear el emisor de tokens que firma HS256 con `sub`, `client`, `role`, `iss`, `aud`, `iat` y `exp` (entero).
   - Verificación: prueba unitaria del emisor verifica claims y firma con el mismo secreto.
-- [ ] 5.3 Usar la constante `TOKEN_LIFETIME_SECONDS = 3600` para `exp` y para `expiresIn`.
+- [x] 5.3 Usar la constante `TOKEN_LIFETIME_SECONDS = 3600` para `exp` y para `expiresIn`.
   - Verificación: prueba unitaria confirma `exp - iat == 3600`.
 
 ## 6. Conexión en el login
 
-- [ ] 6.1 Validar `client` no vacío en `AuthResource` antes de consultar la base de datos.
+- [x] 6.1 Validar `client` no vacío en `AuthResource` antes de consultar la base de datos.
   - Verificación: pruebas 3.1 pasan; las pruebas de caracterización 2.1 a 2.4 siguen pasando.
-- [ ] 6.2 Reemplazar la emisión Base64 por el emisor JWT en el login.
+- [x] 6.2 Reemplazar la emisión Base64 por el emisor JWT en el login.
   - Verificación: pruebas 3.2 y 3.3 pasan; la respuesta conserva `token`, `expiresIn`, `user` y `debug`.
-- [ ] 6.3 Reemplazar el `catch` general por un `500` con mensaje fijo, sin `getMessage()` ni nombre de excepción.
+- [x] 6.3 Reemplazar el `catch` general por un `500` con mensaje fijo, sin `getMessage()` ni nombre de excepción.
   - Verificación: pruebas 3.5 y 3.6 pasan.
-- [ ] 6.4 Separar la validación de solicitud, la autenticación y la emisión en métodos con una sola responsabilidad, sin anidamiento profundo.
+- [x] 6.4 Separar la validación de solicitud, la autenticación y la emisión en métodos con una sola responsabilidad, sin anidamiento profundo.
   - Verificación: revisión de código; `python tools/lab.py test auth` pasa sin cambios de comportamiento.
 
 ## 7. Limpieza
 
-- [ ] 7.1 Eliminar `LegacyTokenUtil` cuando no tenga referencias.
+- [x] 7.1 Eliminar `LegacyTokenUtil` cuando no tenga referencias.
   - Verificación: búsqueda en `auth/` no devuelve referencias; compilación y pruebas pasan.
-- [ ] 7.2 Reemplazar las pruebas de caracterización de Base64 marcadas como cambio intencional por pruebas del JWT.
+- [x] 7.2 Reemplazar las pruebas de caracterización de Base64 marcadas como cambio intencional por pruebas del JWT.
   - Verificación: no quedan pruebas que exijan el formato Base64.
 - [ ] 7.3 Confirmar que `LegacyDatabase`, `UserRecord` y `LoginRequest` no cambiaron.
+  - Estado: NO CUMPLIDO. `LegacyDatabase` cambió (registro estático de `org.sqlite.JDBC`, necesario para la suite). Requiere aprobación explícita o revertir el cambio.
   - Verificación: `git diff` desde la raíz no muestra cambios en esos archivos.
 
 ## 8. Verificación de compatibilidad y cobertura
 
 - [ ] 8.1 Validar un token emitido por `auth` con el verificador de `api/app/security.py`, usando el mismo `AUTH_TOKEN_SECRET`, sin modificar `api/`.
+  - Estado: parcial. Verificado: el token emitido por el servicio es aceptado (`{'username': 'student', 'role': 'STUDENT'}`). Pendiente: comprobar rechazo con otro secreto.
   - Verificación: el verificador acepta el token; con otro secreto lo rechaza. Registrar el resultado como evidencia manual o de integración.
 - [ ] 8.2 Medir la cobertura del código modificado con JaCoCo.
+  - Estado: medido. TokenSecret 100%, TokenIssuer 100%, AuthResource 97% (33/34 líneas), LegacyDatabase 82,6% (19/23): NO CUMPLE el 85% en LegacyDatabase.
   - Verificación: cobertura igual o superior a 85% en las clases modificadas.
-- [ ] 8.3 Ejecutar la suite completa de `auth/`.
+- [x] 8.3 Ejecutar la suite completa de `auth/`.
   - Verificación: `python tools/lab.py test auth` pasa sin fallos.
 - [ ] 8.4 Revisar que no hay secretos reales, token de ejemplo válido ni datos de producción en el diff.
   - Verificación: revisión de `git diff` desde la raíz.

@@ -5,20 +5,16 @@ import io.restassured.response.ValidatableResponse;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.time.Instant;
-import java.util.Base64;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @QuarkusTest
 class AuthResourceTest {
@@ -118,19 +114,12 @@ class AuthResourceTest {
                 .body("token", nullValue());
     }
 
-    // Caracterizacion del token Base64 legacy (username|role|exp|secreto). Cambio intencional, se reemplaza en la tarea 7.2.
+    // Requisito auth-token-issuance: el token es un JWT firmado de tres segmentos, no el Base64 legacy.
     @Test
-    void currentTokenIsLegacyBase64Value() {
+    void loginReturnsSignedJwt() {
         String token = postLogin(VALID_STUDENT_LOGIN).statusCode(200).extract().path("token");
 
-        String decoded = new String(Base64.getDecoder().decode(token), StandardCharsets.UTF_8);
-        String[] parts = decoded.split("\\|");
-
-        assertEquals(4, parts.length);
-        assertEquals("student", parts[0]);
-        assertEquals("STUDENT", parts[1]);
-        assertTrue(Long.parseLong(parts[2]) > Instant.now().getEpochSecond());
-        assertEquals("WORKSHOP_SECRET_2026", parts[3]);
+        assertEquals(3, token.split("\\.").length);
     }
 
     // Requisito auth-login: displayName se devuelve escapado en HTML. Usa un usuario de prueba propio.
@@ -138,7 +127,7 @@ class AuthResourceTest {
     void displayNameIsHtmlEscaped() throws SQLException {
         insertEscapeUser("<b>Ana</b>");
 
-        postLogin("{\"username\":\"" + ESCAPE_USERNAME + "\",\"password\":\"" + ESCAPE_PASSWORD + "\"}")
+        postLogin("{\"username\":\"" + ESCAPE_USERNAME + "\",\"password\":\"" + ESCAPE_PASSWORD + "\",\"client\":\"angular-workshop\"}")
                 .statusCode(200)
                 .body("user.displayName", is("&lt;b&gt;Ana&lt;/b&gt;"));
     }

@@ -37,7 +37,8 @@ class AuthTokenClaimsTest {
         assertEquals("angular-workshop", claims.get("client").asText());
         assertEquals("STUDENT", claims.get("role").asText());
         assertEquals("workshop-auth-backend", claims.get("iss").asText());
-        assertEquals("workshop-requirements-api", claims.get("aud").asText());
+        JsonNode audience = claims.get("aud");
+        assertEquals("workshop-requirements-api", audience.isArray() ? audience.get(0).asText() : audience.asText());
         assertTrue(claims.get("iat").isIntegralNumber());
         assertTrue(claims.get("exp").isIntegralNumber());
     }

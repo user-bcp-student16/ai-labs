@@ -19,6 +19,9 @@ public class AuthResource {
     @Inject
     LegacyDatabase database;
 
+    @Inject
+    AuthTokenService tokenService;
+
     @POST
     @Path("/login")
     public Response login(LoginRequest request) {
@@ -36,10 +39,10 @@ public class AuthResource {
                         if (user == null) {
                             return Response.status(401).entity(Map.of("message", "Invalid user " + request.username + " or password")).build();
                         } else {
-                            String token = LegacyTokenUtil.create(user.username(), user.role());
+                            String token = tokenService.create(user.username(), user.role());
                             Map<String, Object> response = new HashMap<>();
                             response.put("token", token);
-                            response.put("expiresIn", 3600);
+                            response.put("expiresIn", AuthTokenService.TOKEN_LIFETIME_SECONDS);
                             response.put("user", Map.of(
                                     "username", user.username(),
                                     "displayName", StringEscapeUtils.escapeHtml4(user.displayName()),

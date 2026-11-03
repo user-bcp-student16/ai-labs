@@ -1,34 +1,82 @@
 from __future__ import annotations
 
 import base64
+import binascii
+from datetime import datetime, timezone
 import os
 import sqlite3
 import time
 from pathlib import Path
 from typing import Any
 
+import jwt
 import urllib3
-from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from jwt.exceptions import InvalidTokenError
 
 from app.repositories import tasks as task_repository
 
+JWT_ALGORITHM = "HS256"
 LEGACY_SECRET = "WORKSHOP_SECRET_2026"
+JWT_REQUIRED_CLAIMS = ["sub", "role", "iat", "exp"]
 
 
-def legacy_identity(authorization: str = Header(default="")) -> dict[str, str]:
+def _read_legacy_token_deadline() -> datetime | None:
+    configured_deadline = os.getenv("LEGACY_TOKEN_ACCEPT_UNTIL")
+    if not configured_deadline:
+        return None
     try:
-        token = authorization.replace("Bearer ", "")
-        decoded = base64.b64decode(token).decode("utf-8")
-        parts = decoded.split("|")
-        if len(parts) != 4 or parts[3] != LEGACY_SECRET or int(parts[2]) < int(time.time()):
-            raise ValueError("invalid token")
-        return {"username": parts[0], "role": parts[1]}
-    except Exception as error:
-        raise HTTPException(status_code=401, detail="Invalid token: " + str(error)) from error
+        deadline = datetime.fromisoformat(configured_deadline.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RuntimeError("LEGACY_TOKEN_ACCEPT_UNTIL must be an ISO-8601 UTC timestamp") from error
+    if deadline.tzinfo is None or deadline.utcoffset() is None:
+        raise RuntimeError("LEGACY_TOKEN_ACCEPT_UNTIL must include a UTC offset")
+    return deadline.astimezone(timezone.utc)
+
+
+def _decode_legacy_identity(token: str) -> dict[str, str]:
+    decoded = base64.b64decode(token, validate=True).decode("utf-8")
+    parts = decoded.split("|")
+    if len(parts) != 4 or parts[3] != LEGACY_SECRET or int(parts[2]) <= int(time.time()):
+        raise ValueError("invalid legacy token")
+    return {"username": parts[0], "role": parts[1]}
+
+
+def authenticated_identity(request: Request, authorization: str = Header(default="")) -> dict[str, str]:
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        claims = jwt.decode(
+            token,
+            request.app.state.token_secret,
+            algorithms=[JWT_ALGORITHM],
+            options={"require": JWT_REQUIRED_CLAIMS},
+        )
+        username = claims["sub"]
+        role = claims["role"]
+        if not isinstance(username, str) or not username or not isinstance(role, str) or not role:
+            raise InvalidTokenError("invalid identity claims")
+        return {"username": username, "role": role}
+    except InvalidTokenError as jwt_error:
+        legacy_deadline = request.app.state.legacy_token_accept_until
+        if legacy_deadline is not None and datetime.now(timezone.utc) < legacy_deadline:
+            try:
+                return _decode_legacy_identity(token)
+            except (binascii.Error, UnicodeDecodeError, ValueError):
+                pass
+        raise HTTPException(status_code=401, detail="Invalid token: authentication failed") from jwt_error
+
+
+def _read_token_secret() -> str:
+    secret = os.getenv("AUTH_TOKEN_SECRET", "")
+    if len(secret.encode("utf-8")) < 32:
+        raise RuntimeError("AUTH_TOKEN_SECRET must contain at least 32 bytes")
+    return secret
 
 
 def create_app(db_path: str | None = None, upload_dir: str | None = None) -> FastAPI:
+    token_secret = _read_token_secret()
+    legacy_token_accept_until = _read_legacy_token_deadline()
     selected_db = db_path or os.getenv("WORKSHOP_DB_PATH", "./data/workshop.db")
     selected_uploads = upload_dir or os.getenv("WORKSHOP_UPLOAD_DIR", "./uploads")
     Path(selected_db).parent.mkdir(parents=True, exist_ok=True)
@@ -47,6 +95,8 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
     app = FastAPI(title="Workshop Requirements API", version="0.1.0")
     app.state.connection = connection
     app.state.upload_dir = selected_uploads
+    app.state.token_secret = token_secret
+    app.state.legacy_token_accept_until = legacy_token_accept_until
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -67,7 +117,7 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
         }
 
     @app.get("/api/tasks")
-    def list_tasks(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(legacy_identity)) -> list[dict[str, Any]]:
+    def list_tasks(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(authenticated_identity)) -> list[dict[str, Any]]:
         requested_owner = owner or identity["username"]
         rows = task_repository.find_tasks_by_owner(connection, requested_owner)
         result: list[dict[str, Any]] = []
@@ -76,7 +126,7 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
         return result
 
     @app.post("/api/tasks", status_code=201)
-    def create_task(payload: dict[str, Any] = Body(...), identity: dict[str, str] = Depends(legacy_identity)) -> dict[str, Any]:
+    def create_task(payload: dict[str, Any] = Body(...), identity: dict[str, str] = Depends(authenticated_identity)) -> dict[str, Any]:
         title = str(payload.get("title", ""))
         description = str(payload.get("description", ""))
         status = str(payload.get("status", "TODO"))
@@ -87,7 +137,7 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
         return as_task(task_repository.find_task_by_id(connection, task_id))
 
     @app.get("/api/summary")
-    def summary(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(legacy_identity)) -> dict[str, Any]:
+    def summary(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(authenticated_identity)) -> dict[str, Any]:
         requested_owner = owner or identity["username"]
         rows = task_repository.find_status_and_priority_by_owner(connection, requested_owner)
         response: dict[str, Any] = {"owner": requested_owner, "total": 0, "byStatus": {}, "highPriorityOpen": 0}
@@ -104,14 +154,14 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
         return response
 
     @app.post("/api/requirements", status_code=201)
-    async def upload_requirement(file: UploadFile = File(...), identity: dict[str, str] = Depends(legacy_identity)) -> dict[str, Any]:
+    async def upload_requirement(file: UploadFile = File(...), identity: dict[str, str] = Depends(authenticated_identity)) -> dict[str, Any]:
         target = Path(selected_uploads) / str(file.filename)
         content = await file.read()
         target.write_bytes(content)
         return {"owner": identity["username"], "fileName": file.filename, "storedAt": str(target), "size": len(content)}
 
     @app.get("/api/backend-health")
-    def backend_health(identity: dict[str, str] = Depends(legacy_identity)) -> dict[str, Any]:
+    def backend_health(identity: dict[str, str] = Depends(authenticated_identity)) -> dict[str, Any]:
         url = os.getenv("AUTH_HEALTH_URL", "http://localhost:8080/q/health")
         try:
             response = urllib3.PoolManager().request("GET", url, timeout=3.0)

@@ -37,6 +37,8 @@ Puedes recorrer los tres componentes. Conserva las evidencias anteriores y añad
 
 Necesitas Docker con Compose y el motor iniciado. Podman Compose es otra opción si ya está preparado en tu equipo.
 
+Antes de arrancar, configura `AUTH_TOKEN_SECRET` en el entorno con al menos 32 bytes aleatorios. Durante una migración, puedes configurar `LEGACY_TOKEN_ACCEPT_UNTIL` con una fecha/hora UTC ISO-8601 para aceptar temporalmente tokens antiguos; sin esa variable, solo se aceptan JWT.
+
 ```bash
 docker compose up --build
 ```

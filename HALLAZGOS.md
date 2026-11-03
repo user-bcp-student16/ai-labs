@@ -8,7 +8,7 @@ Matriz de Discovery. Componente api. Evidencias citadas como api/ruta:linea desd
 
 id | componente | hallazgo | tipo | explicacion | evidencia (archivo:linea) | severidad | estado
 --- | --- | --- | --- | --- | --- | --- | ---
-H-API-01 | api | Token Base64 con secreto embebido y sin firma | Vulnerabilidad | Quien conozca el secreto fijo del codigo puede fabricar tokens con username y role arbitrarios. El role se devuelve sin verificar y ninguna ruta lo usa. La expiracion si se valida, pero no hay emisor ni audiencia. | api/app/main.py:14, api/app/main.py:19-24; api/tests/test_api.py:11 (mismo secreto en pruebas) | alta | Aprobado
+H-API-01 | api | Token Base64 con secreto embebido y sin firma | Vulnerabilidad | Auth emite JWT HS256 y la API valida firma, claims requeridos y expiracion. La compatibilidad con el formato Base64 heredado sigue habilitada solo hasta LEGACY_TOKEN_ACCEPT_UNTIL; HMAC no valida emisor ni audiencia. | api/app/main.py:16-78; api/tests/test_api.py:15-52 | alta | En transicion: retirar compatibilidad al llegar el corte configurado
 H-API-02 | api | Autorizacion: el cliente elige el owner | Vulnerabilidad | El parametro owner de las consultas y el campo owner del body se usan sin compararlos con la identidad del token. Cualquier usuario autenticado lee tareas y resumen de otro owner y crea tareas a nombre de otro. | api/app/main.py:68-69, api/app/main.py:83, api/app/main.py:91-92 | alta | Aprobado
 H-API-03 | api | SQL concatenado en listados, inserts y resumen | Vulnerabilidad | Los valores del cliente se concatenan en el SQL. Un titulo, descripcion u owner con comillas altera la consulta, lee filas de otros owners o rompe el insert. | api/app/main.py:70, api/app/main.py:84, api/app/main.py:93 (tambien api/app/main.py:87 con lastrowid, riesgo bajo) | alta | Resuelto: consultas parametrizadas en api/app/repositories/tasks.py
 H-API-04 | api | Nombre de archivo subido usado tal cual (path traversal) | Vulnerabilidad | file.filename se une a la ruta de carga sin normalizar. Un nombre con componentes de ruta escribe fuera del directorio de uploads y la respuesta expone la ruta real almacenada. | api/app/main.py:109, api/app/main.py:112 | alta | Aprobado
@@ -65,5 +65,45 @@ GET | /api/backend-health | Si | api/app/main.py:114-121 | HTTP saliente a AUTH_
 - docs/ENDPOINTS.md no existe; el contrato anterior se derivo solo del codigo.
 - No se ejecutaron pruebas ni se midio cobertura en este paso de Discovery.
 - Advisories de urllib3 2.5.0 y python-multipart 0.0.21 pendientes de verificar; no se confirmaron CVEs.
-- H-API-01 cambia el formato del token. Si auth emite el token, requiere coordinacion con auth; no verificado en este paso.
-- backend-health depende de auth en localhost:8080/q/health. Sin cambios en auth.
+- H-API-01: auth ahora emite JWT HS256 y la API valida ese formato; la aceptacion heredada depende del corte `LEGACY_TOKEN_ACCEPT_UNTIL`.
+- backend-health depende de auth en localhost:8080/q/health; ese contrato no cambio en esta implementacion.
+
+## auth
+
+### Hallazgos candidatos
+
+#### H-AUTH-01 — Consulta de credenciales construida por concatenacion
+- Estado: CANDIDATO
+- Evidencia: `auth/src/main/java/com/bcp/workshop/auth/LegacyDatabase.java:32` interpola `username` y `password` directamente en SQL; `AuthResource.java:35` pasa los campos recibidos a ese metodo.
+- Impacto: una entrada que altere la expresion SQL podria eludir la comprobacion de credenciales y permitir iniciar sesion como otro usuario.
+- Prioridad propuesta: alta.
+- Contrato potencialmente afectado: `POST /auth/login`; las credenciales invalidas deben producir 401 y no autenticarse como una cuenta existente.
+- Como validarlo: agregar pruebas de integracion con entradas que contengan sintaxis SQL y comprobar que se tratan como valores literales, siguen devolviendo 401 y no acceden a una cuenta; verificar que la consulta use parametros.
+
+#### H-AUTH-02 — Token codificado en Base64 sin firma criptografica
+- Estado: Implementado en emision y validacion JWT; compatibilidad heredada temporal en API
+- Evidencia: `auth/src/main/java/com/bcp/workshop/auth/AuthTokenService.java:14,26-33` emite JWT HS256 con `sub`, `role`, `iat` y `exp`; `api/app/main.py:22-75` valida firma y claims y limita tokens heredados al corte configurado en `LEGACY_TOKEN_ACCEPT_UNTIL`.
+- Impacto: Base64 no garantiza integridad ni autenticidad. Un consumidor que acepte estos campos como prueba de identidad podria recibir claims modificados o fabricados.
+- Prioridad propuesta: alta.
+- Contrato potencialmente afectado: el campo `token` de la respuesta exitosa de `POST /auth/login` y la confianza que depositen en el formato sus consumidores.
+- Como validarlo: `python tools/lab.py test auth` (5 pruebas aprobadas; AuthTokenService con 100% de lineas y ramas JaCoCo); `python tools/lab.py test api` (28 aprobadas, 1 fallo preexistente H-API-02; cobertura 93.18%). La suite verifica firma invalida, expiracion y aceptacion/rechazo legado por corte.
+
+#### H-AUTH-03 — Credenciales de demostracion sembradas y almacenadas en texto plano
+- Estado: CANDIDATO
+- Evidencia: `auth/src/main/java/com/bcp/workshop/auth/LegacyDatabase.java:22` declara la columna `password` como texto; las lineas 23-24 insertan cuentas y contrasenas fijas al inicializar la base de datos.
+- Impacto: cada base nueva habilita cuentas conocidas del laboratorio y una copia de la base expone las contrasenas sin derivacion criptografica. El impacto depende de que el servicio o la base se use fuera del entorno aislado de demostracion.
+- Prioridad propuesta: media.
+- Contrato potencialmente afectado: autenticacion de `POST /auth/login` y proteccion de credenciales almacenadas.
+- Como validarlo: iniciar con una base temporal vacia y confirmar si las cuentas se crean e inician sesion; revisar el contenido almacenado y verificar que una configuracion no destinada al laboratorio pueda deshabilitar el sembrado.
+
+#### H-AUTH-04 — Respuesta de error expone detalles de excepciones internas
+- Estado: CANDIDATO
+- Evidencia: `auth/src/main/java/com/bcp/workshop/auth/AuthResource.java:54-57` captura cualquier `Exception` y devuelve al cliente `error.getMessage()` y el nombre de la clase de excepcion.
+- Impacto: fallos internos pueden revelar detalles de implementacion que faciliten diagnosticos no autorizados o el reconocimiento del servicio.
+- Prioridad propuesta: media.
+- Contrato potencialmente afectado: respuesta de error 500 de `POST /auth/login`; el contrato deberia mantener un mensaje publico estable sin detalles internos.
+- Como validarlo: simular un fallo de persistencia y comprobar que el cliente recibe un error generico y estable, mientras que los detalles quedan solo en registros internos controlados.
+
+### Estado de la investigacion
+
+H-AUTH-01, H-AUTH-03 y H-AUTH-04 permanecen como candidatos para revision humana. H-AUTH-02 se implemento; la compatibilidad con tokens heredados debe retirarse al alcanzar el corte configurado. No se modificaron otros hallazgos.

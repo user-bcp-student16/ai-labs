@@ -12,7 +12,7 @@ Este apartado documenta el comportamiento observado en la API actual. No hay un 
 Devuelve las tareas del propietario solicitado; si no se indica propietario, lista las tareas de la identidad del token.
 
 #### 2. Autenticacion
-Requiere `Authorization: Bearer <token>`. El token observado es Base64 de cuatro segmentos separados por `|` (`username|role|exp|secret`); no es un JWT. Un token no decodificable, expirado o con secreto incorrecto produce 401.
+Requiere encabezado Authorization con un JWT firmado HS256 y claims sub, role, iat y exp. La API valida la firma y expiracion con AUTH_TOKEN_SECRET (minimo 32 bytes). El formato heredado solo se acepta si LEGACY_TOKEN_ACCEPT_UNTIL configura un corte UTC vigente; si no, se rechaza.
 
 #### 3. Request
 
@@ -73,13 +73,13 @@ Los tiempos del ejemplo son ilustrativos; la base de datos fija `createdAt` al c
 
 | Codigo | Cuando ocurre | Ejemplo de cuerpo |
 |---|---|---|
-| `401 Unauthorized` | Header ausente o token que no supera la decodificacion y validacion. El detalle depende del error concreto. | `{"detail":"Invalid token: Incorrect padding"}` para `Bearer invalid`. |
+| `401 Unauthorized` | Header ausente o token invalido. | `{"detail":"Invalid token: authentication failed"}` |
 | `500 Internal Server Error` | Error no manejado al consultar SQLite. La ruta no define un cuerpo para este caso; el manejador ASGI predeterminado responde texto `Internal Server Error`. Un manejador de despliegue puede cambiarlo. | `Internal Server Error` (texto). |
 
 #### 6. Notas de seguridad
-El filtro `owner` es controlado por el cliente y no se compara con el usuario del token. Un usuario con token valido puede solicitar las tareas de otro `owner` (IDOR, H-API-02). El token usa un secreto fijo y no tiene firma, emisor ni audiencia verificados (H-API-01). SQL se ejecuta con parametro SQLite para el valor de `owner` (H-API-03).
+El filtro `owner` es controlado por el cliente y no se compara con el usuario del token. Un usuario con token valido puede solicitar las tareas de otro `owner` (IDOR, H-API-02). Los JWT se verifican con HS256, pero no se validan emisor ni audiencia. La compatibilidad con el formato heredado permanece disponible hasta el corte configurado (H-API-01, H-AUTH-02). SQL se ejecuta con parametro SQLite para el valor de `owner` (H-API-03).
 
-Implementacion observable: `api/app/main.py:19-27`, `api/app/main.py:70-77`; consulta parametrizada en `api/app/repositories/tasks.py:7-9`.
+Implementacion observable: `api/app/main.py:24-78`, `api/app/main.py:116-123`; consulta parametrizada en `api/app/repositories/tasks.py:7-9`.
 
 ### POST /api/tasks
 
@@ -147,14 +147,14 @@ Ejemplo:
 
 | Codigo | Cuando ocurre | Ejemplo de cuerpo |
 |---|---|---|
-| `401 Unauthorized` | Header ausente o token invalido. | `{"detail":"Invalid token: Incorrect padding"}` para `Bearer invalid`. |
+| `401 Unauthorized` | Header ausente o token invalido. | `{"detail":"Invalid token: authentication failed"}` |
 | `422 Unprocessable Entity` | Cuerpo ausente o no es un objeto JSON. | `{"detail":[{"type":"dict_type","loc":["body"],"msg":"Input should be a valid dictionary","input":[]}]}` al enviar `[]`. |
 | `500 Internal Server Error` | Error no manejado al insertar o leer SQLite. No hay cuerpo definido por esta ruta; el manejador ASGI predeterminado responde texto `Internal Server Error`. | `Internal Server Error` (texto). |
 
 #### 6. Notas de seguridad
-El cuerpo permite que el cliente elija `owner`, incluso si difiere del usuario autenticado (IDOR, H-API-02). La ruta convierte valores a texto, pero no valida listas permitidas para estado o prioridad. La escritura y lectura usan parametros SQLite (H-API-03). El error 401 incluye el texto de la excepcion de token.
+El cuerpo permite que el cliente elija `owner`, incluso si difiere del usuario autenticado (IDOR, H-API-02). La ruta convierte valores a texto, pero no valida listas permitidas para estado o prioridad. La escritura y lectura usan parametros SQLite (H-API-03). El error 401 usa un detalle generico.
 
-Implementacion observable: `api/app/main.py:19-27`, `api/app/main.py:79-87`; SQL parametrizado en `api/app/repositories/tasks.py:15-28`.
+Implementacion observable: `api/app/main.py:24-78`, `api/app/main.py:128-137`; SQL parametrizado en `api/app/repositories/tasks.py:15-28`.
 
 ### GET /api/summary
 
@@ -206,7 +206,7 @@ Ejemplo con las tareas sembradas para `student`:
 
 | Codigo | Cuando ocurre | Ejemplo de cuerpo |
 |---|---|---|
-| `401 Unauthorized` | Header ausente o token invalido. | `{"detail":"Invalid token: Incorrect padding"}` para `Bearer invalid`. |
+| `401 Unauthorized` | Header ausente o token invalido. | `{"detail":"Invalid token: authentication failed"}` |
 | `500 Internal Server Error` | Error no manejado al consultar SQLite. No hay cuerpo definido por esta ruta; el manejador ASGI predeterminado responde texto `Internal Server Error`. | `Internal Server Error` (texto). |
 
 #### 6. Notas de seguridad
@@ -270,7 +270,7 @@ Ejemplo con el directorio por defecto y 24 bytes:
 
 | Codigo | Cuando ocurre | Ejemplo de cuerpo |
 |---|---|---|
-| `401 Unauthorized` | Header ausente o token invalido. | `{"detail":"Invalid token: Incorrect padding"}` para `Bearer invalid`. |
+| `401 Unauthorized` | Header ausente o token invalido. | `{"detail":"Invalid token: authentication failed"}` |
 | `422 Unprocessable Entity` | Falta el campo `file` o el multipart no valida. | `{"detail":[{"type":"missing","loc":["body","file"],"msg":"Field required","input":null}]}` al omitir el archivo. |
 | `500 Internal Server Error` | Error no manejado al leer o escribir el archivo. La ruta no define cuerpo propio; el manejador ASGI predeterminado responde texto `Internal Server Error`. | `Internal Server Error` (texto). |
 
@@ -324,18 +324,18 @@ Ejemplo de forma de respuesta (el cuerpo depende del backend configurado):
 
 | Codigo | Cuando ocurre | Ejemplo de cuerpo |
 |---|---|---|
-| `401 Unauthorized` | Header ausente o token invalido. | `{"detail":"Invalid token: Incorrect padding"}` para `Bearer invalid`. |
+| `401 Unauthorized` | Header ausente o token invalido. | `{"detail":"Invalid token: authentication failed"}` |
 
 Una excepcion de conexion al backend no se devuelve como error HTTP: la ruta responde `200 OK` con `status: 0` y el texto de la excepcion en `body`.
 
 #### 6. Notas de seguridad
-La respuesta puede exponer el texto crudo de errores del cliente HTTP en `body` (H-API-09). La URL de destino se controla con una variable de entorno del servidor. El token no verifica firma, emisor ni audiencia (H-API-01).
+La respuesta puede exponer el texto crudo de errores del cliente HTTP en `body` (H-API-09). La URL de destino se controla con una variable de entorno del servidor. Los JWT verifican firma y expiracion, pero no emisor ni audiencia; los tokens heredados solo se aceptan antes del corte configurado (H-API-01, H-AUTH-02).
 
 Implementacion observable: `api/app/main.py:114-120`.
 
 ### Preguntas abiertas y riesgos pendientes
 
-- El formato del token observado es Base64 con secreto fijo; la coordinacion con el emisor y la sustitucion por un token firmado siguen pendientes (H-API-01).
+- La transicion de tokens heredados requiere configurar `LEGACY_TOKEN_ACCEPT_UNTIL` y desactivar la compatibilidad al llegar el corte (H-API-01, H-AUTH-02).
 - La autorizacion por `owner` no esta vinculada a la identidad del token en tasks ni en summary (H-API-02).
 - La politica de extensiones, tamano maximo y nombre seguro de cargas sigue sin definirse ni aplicarse (H-API-04 y H-API-05).
 - Las rutas no especifican respuestas JSON propias para errores internos de SQLite o del sistema de archivos. El cuerpo 500 depende del manejador ASGI del despliegue.

@@ -2,11 +2,15 @@ name: ai-labs
 services:
   auth:
     build: ./auth
+    environment:
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?Set AUTH_TOKEN_SECRET to at least 32 bytes}
     ports:
       - "127.0.0.1:8080:8080"
   api:
     build: ./api
     environment:
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?Set AUTH_TOKEN_SECRET to at least 32 bytes}
+      LEGACY_TOKEN_ACCEPT_UNTIL: ${LEGACY_TOKEN_ACCEPT_UNTIL:-}
       AUTH_HEALTH_URL: http://auth:8080/q/health
       WORKSHOP_DB_PATH: /data/workshop.db
       WORKSHOP_UPLOAD_DIR: /uploads

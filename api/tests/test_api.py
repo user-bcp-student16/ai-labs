@@ -1,9 +1,11 @@
 import base64
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 
@@ -11,8 +13,23 @@ from app import main as api_main
 from app.main import create_app
 from app.repositories import tasks as task_repository
 
+TEST_TOKEN_SECRET = "test-only-auth-token-secret-32-bytes"
 
 def token(username: str = "student", role: str = "STUDENT") -> str:
+    issued_at = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "sub": username,
+            "role": role,
+            "iat": issued_at,
+            "exp": issued_at + timedelta(hours=1),
+        },
+        TEST_TOKEN_SECRET,
+        algorithm="HS256",
+    )
+
+
+def legacy_token(username: str = "student", role: str = "STUDENT") -> str:
     raw = f"{username}|{role}|{int(time.time()) + 3600}|WORKSHOP_SECRET_2026"
     return base64.b64encode(raw.encode()).decode()
 
@@ -66,6 +83,62 @@ def test_rejects_invalid_token(tmp_path: Path) -> None:
     with TestClient(app) as client:
         response = client.get("/api/tasks", headers={"Authorization": "Bearer invalid"})
     assert response.status_code == 401
+
+
+def test_rejects_jwt_with_invalid_signature(tmp_path: Path) -> None:
+    app = create_app(str(tmp_path / "workshop.db"), str(tmp_path / "uploads"))
+    invalid_token = jwt.encode(
+        {"sub": "student", "role": "STUDENT", "iat": int(time.time()), "exp": int(time.time()) + 3600},
+        "different-test-secret-that-is-long-enough",
+        algorithm="HS256",
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/tasks", headers={"Authorization": f"Bearer {invalid_token}"})
+    assert response.status_code == 401
+
+
+def test_rejects_expired_jwt(tmp_path: Path) -> None:
+    app = create_app(str(tmp_path / "workshop.db"), str(tmp_path / "uploads"))
+    expired_token = jwt.encode(
+        {"sub": "student", "role": "STUDENT", "iat": int(time.time()) - 3601, "exp": int(time.time()) - 1},
+        TEST_TOKEN_SECRET,
+        algorithm="HS256",
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/tasks", headers={"Authorization": f"Bearer {expired_token}"})
+    assert response.status_code == 401
+
+
+def test_accepts_legacy_token_only_before_configured_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LEGACY_TOKEN_ACCEPT_UNTIL", "2099-01-01T00:00:00Z")
+    app = create_app(str(tmp_path / "workshop.db"), str(tmp_path / "uploads"))
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/tasks",
+            headers={"Authorization": f"Bearer {legacy_token()}"},
+        )
+    assert response.status_code == 200
+
+
+def test_rejects_legacy_token_after_configured_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LEGACY_TOKEN_ACCEPT_UNTIL", "2000-01-01T00:00:00Z")
+    app = create_app(str(tmp_path / "workshop.db"), str(tmp_path / "uploads"))
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/tasks",
+            headers={"Authorization": f"Bearer {legacy_token()}"},
+        )
+    assert response.status_code == 401
+
+
+def test_requires_token_secret(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTH_TOKEN_SECRET")
+    with pytest.raises(RuntimeError, match="AUTH_TOKEN_SECRET"):
+        create_app(str(tmp_path / "workshop.db"), str(tmp_path / "uploads"))
 
 
 def test_owner_filter_with_quote_is_literal(tmp_path: Path) -> None:

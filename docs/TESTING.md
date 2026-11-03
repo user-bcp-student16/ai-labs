@@ -331,3 +331,20 @@ def test_upload_write_error_returns_server_error(tmp_path: Path, monkeypatch: py
 
 - Tras corregir H-API-02, repetir `GET /api/tasks?owner=trainer` con token `student` y mantener la expectativa de no exponer filas de `trainer`.
 - Al cambiar el manejo de errores del servidor o del backend-health, actualizar los ejemplos solo despues de comprobar el nuevo cuerpo observable.
+
+## auth
+
+### H-AUTH-02 — Emision y validacion de JWT
+
+- Comando: `python tools/lab.py test auth`.
+- Resultado: 5 pruebas aprobadas; `mvn verify` termina con `BUILD SUCCESS`.
+- JaCoCo: `AuthTokenService` tiene 12/12 lineas y 2/2 ramas cubiertas (100%).
+- La caracterizacion confirma que login conserva `200`, `token`, `expiresIn` y `user`; las pruebas del token verifican firma, identidad, rol y expiracion.
+
+### H-AUTH-02 / H-API-01 — Compatibilidad del consumidor
+
+- Comando: `python tools/lab.py test api`.
+- Resultado: 28 aprobadas, 1 fallida; cobertura total 93.18%, superior al gate de 85%.
+- La suite confirma rechazo de firma invalida y token expirado, y acepta el formato heredado solo antes de `LEGACY_TOKEN_ACCEPT_UNTIL`.
+- La falla es `test_lists_only_authenticated_owner_tasks` (H-API-02). Ya fallaba en la linea base (23 aprobadas, 1 fallida) y permanece fuera del alcance de este cambio.
+- `docker compose config` no se pudo validar porque Docker CLI no esta disponible en el entorno.

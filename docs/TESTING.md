@@ -331,3 +331,69 @@ def test_upload_write_error_returns_server_error(tmp_path: Path, monkeypatch: py
 
 - Tras corregir H-API-02, repetir `GET /api/tasks?owner=trainer` con token `student` y mantener la expectativa de no exponer filas de `trainer`.
 - Al cambiar el manejo de errores del servidor o del backend-health, actualizar los ejemplos solo despues de comprobar el nuevo cuerpo observable.
+
+## auth
+
+### Caracterizacion de `POST /auth/login` (H-AUTH-01, Issue #22)
+
+Pruebas en `auth/src/test/java/com/bcp/workshop/auth/AuthResourceTest.java`, escritas antes de corregir `LegacyDatabase.findByCredentials`. Cambio OpenSpec: `openspec/changes/auth-login-injection-prevention`. No se modifico codigo de produccion.
+
+La suite de Dia 1 de este documento solo cubre `api`; la unica prueba previa de `auth` era `logsInWithWorkshopUser`, que se conserva sin cambios.
+
+#### Matriz de casos
+
+Prueba | Tarea | Protege | Resultado esperado | Resultado observado
+--- | --- | --- | --- | ---
+`logsInWithWorkshopUser` (existente) | - | Spec "Credenciales validas" | 200, `user.username`, `token` | Pasa
+`validLoginKeepsResponseContract` | 2.1 | Contrato de exito: `expiresIn` 3600, `user.role`, `user.displayName` | 200 con esos campos | Pasa
+`wrongPasswordForExistingUserIsRejected` | 2.2 | Contrato 401 por contrasena incorrecta | 401, sin `token`, `message` `Invalid user student or password` | Pasa
+`unknownUserIsRejected` | 2.3 | Contrato 401 por usuario inexistente | 401, sin `token`, `message` `Invalid user nobody or password` | Pasa
+`emptyUsernameIsBadRequest` | 2.4 | Validacion de entrada | 400 `Username is required` | Pasa
+`emptyPasswordIsBadRequest` | 2.4 | Validacion de entrada | 400 `Password is required` | Pasa
+`missingBodyIsBadRequest` | 2.4 | Validacion de entrada | 400 `Request is null` | Pasa
+`injectionInUsernameIsRejected` | 2.5 | Spec "Entrada de inyeccion en el usuario" (`' OR '1'='1' --`) | 401, sin `token` | Falla antes de la correccion (200); pasa despues
+`commentInjectionAfterRealUsernameIsRejected` | 2.6 | Spec "Entrada de inyeccion en el usuario" (`student'--`) | 401, sin `token` | Falla antes de la correccion (200); pasa despues
+`injectionInPasswordIsRejected` | 2.7 | Spec "Entrada de inyeccion en la contrasena" (`' OR '1'='1`) | 401, sin `token` | Falla antes de la correccion (200); pasa despues
+
+#### Ejecuciones
+
+- Componente: `auth`. ID relacionado: H-AUTH-01. Directorio de ejecucion: raiz de `ai-labs` (el script ejecuta `mvn verify` en `auth/`).
+- Nota de entorno: el puerto de pruebas por defecto de Quarkus (8081) esta ocupado por el proxy MCP local, que no se toca. Ambas ejecuciones usaron `QUARKUS_HTTP_TEST_PORT=8091`; es solo una variable de entorno, sin cambios de configuracion en el repositorio. Sin ella, la linea base falla con `Port already bound: 8081`.
+
+Linea base (antes de agregar pruebas):
+
+- Comando: `$env:QUARKUS_HTTP_TEST_PORT='8091'; python tools/lab.py test auth`.
+- Codigo de salida: `0`.
+- Resultado: 1 prueba ejecutada, 0 fallos, 0 errores. BUILD SUCCESS.
+
+Caracterizacion (con las pruebas nuevas):
+
+- Comando: `$env:QUARKUS_HTTP_TEST_PORT='8091'; python tools/lab.py test auth`.
+- Codigo de salida: `1`.
+- Resultado: 10 pruebas ejecutadas, 3 fallos, 0 errores. BUILD FAILURE.
+- Las 7 pruebas de comportamiento protegido pasan. Las 3 de inyeccion fallan con `Expected status code <401> but was <200>`: el login acepta las entradas de inyeccion. Es la evidencia del defecto del Issue #22; las pruebas no se marcan `@Disabled` ni se debilitan.
+
+#### Correccion (tarea 3.1)
+
+- Cambio: `LegacyDatabase.findByCredentials` usa `PreparedStatement` con `WHERE username = ? AND password = ?` y `setString`. Sin cambios en `AuthResource`, `LegacyTokenUtil`, `LoginRequest`, `UserRecord` ni `pom.xml` (`git diff --stat -- auth api web` muestra solo `LegacyDatabase.java` y `AuthResourceTest.java`).
+- Comando: `$env:QUARKUS_HTTP_TEST_PORT='8091'; python tools/lab.py test auth`.
+- Resultado: 10 pruebas, 0 fallos, 0 errores. BUILD SUCCESS. Las 3 pruebas de inyeccion pasan sin modificarlas.
+- JaCoCo (`auth/target/site/jacoco/jacoco.xml`), metodo `findByCredentials`: lineas 9/10 (90%), instrucciones 51/54 (94.4%), ramas 3/4 (75%). Lo no cubierto es el bloque `catch` (no hay prueba de falla de conexion; `design.md` la deja opcional). Cumple la meta de 85% en lineas e instrucciones.
+- `openspec validate auth-login-injection-prevention`: `Change 'auth-login-injection-prevention' is valid`, codigo de salida 0.
+
+#### Pruebas de `LegacyDatabase` (tarea 4.2)
+
+- `auth/src/test/java/com/bcp/workshop/auth/LegacyDatabaseTest.java`: `findsSeededUserWithValidCredentials` (devuelve el `UserRecord` de `student`) y `returnsNullForInjectionInput` (las entradas de inyeccion devuelven `null`).
+- Mismo comando. Resultado: 12 pruebas (10 de `AuthResourceTest` y 2 de `LegacyDatabaseTest`), 0 fallos, 0 errores. BUILD SUCCESS.
+
+#### Commits locales (rama `feature/h-auth-01`, sin push)
+
+- `e1ea2b0` test(auth): pruebas de caracterizacion de `POST /auth/login` (tarea 2.9).
+- `30a603f` fix(auth): consulta parametrizada en `findByCredentials` y `LegacyDatabaseTest` (tarea 3.4).
+
+#### Pendientes
+
+- No hay prueba de falla de conexion (rama `catch`); no es sencilla de aislar sin cambiar la configuracion.
+- Falta la revision y aprobacion humanas; integracion y checkpoint locales del Dia 1 solo despues de ellas.
+- CodeQL y Dependency Review dependen de CI y no se ejecutaron en local.
+- El mensaje 401 refleja el usuario enviado; las pruebas 2.2 y 2.3 lo fijan por contrato segun `design.md`, pero queda como seguimiento aparte.
